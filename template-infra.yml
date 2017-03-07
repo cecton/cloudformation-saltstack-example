@@ -1,0 +1,26 @@
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", [!Ref "AWS::StackName", !Ref "AWS::AccountId"]]
+      AccessControl: Private
+  InternalZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: example.internal
+      VPCs:
+      - VPCId: vpc-4dfa2f24
+        VPCRegion: !Ref AWS::Region
+
+Outputs:
+  ConfigBucketName:
+    Description: Return the bucket name
+    Value: !Ref ConfigBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ConfigBucketName"
+  InternalZoneId:
+    Description: Return the internal zone Id
+    Value: !Ref InternalZone
+    Export:
+      Name: !Sub "${AWS::StackName}-InternalZoneId"
+

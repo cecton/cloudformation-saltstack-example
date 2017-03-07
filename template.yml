@@ -1,0 +1,289 @@
+Parameters:
+  InfraStackName:
+    Description: Name of the infra stack
+    Type: String
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access into the web server
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+
+  # IAM
+  SaltConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  SaltConfigPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: saltMasterAccess
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+            - s3:Get*
+            - s3:List*
+          Resource:
+            - !Join ["", ["arn:aws:s3:::", "Fn::ImportValue": !Sub "${InfraStackName}-ConfigBucketName"]]
+            - !Join ["", ["arn:aws:s3:::", "Fn::ImportValue": !Sub "${InfraStackName}-ConfigBucketName", "/*"]]
+        - Effect: Allow
+          Action: ec2:*
+          Resource: "*"
+      Roles:
+      - Ref: SaltConfigRole
+  SaltConfigInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: SaltConfigRole
+
+  # AWS::EC2::Instance's
+  SaltMaster:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SecurityGroups:
+      - Ref: SaltMasterSecurityGroup
+      - Ref: SSHSecurityGroup
+      KeyName:
+        Ref: KeyName
+      ImageId: ami-3f1bd150
+      Tags:
+      - Key: Name
+        Value: SaltMaster
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - "\n"
+          -
+            - |
+              #!/bin/bash
+
+              # Install saltstack
+              wget -O - https://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest/SALTSTACK-GPG-KEY.pub | apt-key add -
+              echo 'deb http://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest xenial main' > /etc/apt/sources.list.d/saltstack.list
+              apt-get update -y
+              apt-get upgrade -y
+              apt-get install salt-master awscli -y
+
+              # Configure awscli's region
+              mkdir -p /root/.aws
+              cat - > /root/.aws/config <<EOF
+              [default]
+            - !Join ["", ["region = ", !Ref "AWS::Region"]]
+            - |
+              EOF
+
+            - !Join ["", ["bucket=", "Fn::ImportValue": !Sub "${InfraStackName}-ConfigBucketName"]]
+            - |
+
+              # Copy SaltStack configuration files from bucket
+              aws s3 sync --delete s3://$bucket/salt /srv/salt
+              aws s3 cp s3://$bucket/keys/master_minion.pem /etc/salt/pki/master/master.pem
+              aws s3 cp s3://$bucket/keys/master_minion.pub /etc/salt/pki/master/master.pub
+              aws s3 cp s3://$bucket/keys/minion1.pub /etc/salt/pki/master/minions/database
+              aws s3 cp s3://$bucket/keys/minion2.pub /etc/salt/pki/master/minions/web
+
+              systemctl restart salt-master
+      IamInstanceProfile: !Ref SaltConfigInstanceProfile
+  Database:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SecurityGroups:
+      - Ref: MinionSecurityGroup
+      - Ref: DatabaseSecurityGroup
+      KeyName:
+        Ref: KeyName
+      ImageId: ami-3f1bd150
+      Tags:
+      - Key: Name
+        Value: Database
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - "\n"
+          -
+            - |
+              #!/bin/bash
+
+              # Install saltstack
+              wget -O - https://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest/SALTSTACK-GPG-KEY.pub | apt-key add -
+              echo 'deb http://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest xenial main' > /etc/apt/sources.list.d/saltstack.list
+              apt-get update -y
+              apt-get upgrade -y
+              apt-get install salt-minion awscli -y
+
+              # Configure awscli's region
+              mkdir -p /root/.aws
+              cat - > /root/.aws/config <<EOF
+              [default]
+            - !Join ["", ["region = ", !Ref "AWS::Region"]]
+            - |
+              EOF
+
+              cat - > /etc/salt/minion <<EOF
+              master: saltmaster.example.internal
+              id: database
+              EOF
+
+            - !Join ["", ["bucket=", "Fn::ImportValue": !Sub "${InfraStackName}-ConfigBucketName"]]
+            - |
+
+              # Copy SaltStack configuration files from bucket
+              aws s3 cp s3://$bucket/keys/master_minion.pub /etc/salt/pki/minion/master.pub
+              aws s3 cp s3://$bucket/keys/minion1.pem /etc/salt/pki/minion/minion.pem
+              aws s3 cp s3://$bucket/keys/minion1.pub /etc/salt/pki/minion/minion.pub
+
+              systemctl restart salt-minion
+      IamInstanceProfile: !Ref SaltConfigInstanceProfile
+  Web:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SecurityGroups:
+      - Ref: MinionSecurityGroup
+      - Ref: WebSecurityGroup
+      KeyName:
+        Ref: KeyName
+      ImageId: ami-3f1bd150
+      Tags:
+      - Key: Name
+        Value: Web
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - "\n"
+          -
+            - |
+              #!/bin/bash
+
+              # Install saltstack
+              wget -O - https://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest/SALTSTACK-GPG-KEY.pub | apt-key add -
+              echo 'deb http://repo.saltstack.com/apt/ubuntu/16.04/amd64/latest xenial main' > /etc/apt/sources.list.d/saltstack.list
+              apt-get update -y
+              apt-get upgrade -y
+              apt-get install salt-minion awscli -y
+
+              # Configure awscli's region
+              mkdir -p /root/.aws
+              cat - > /root/.aws/config <<EOF
+              [default]
+            - !Join ["", ["region = ", !Ref "AWS::Region"]]
+            - |
+              EOF
+
+              cat - > /etc/salt/minion <<EOF
+              master: saltmaster.example.internal
+              id: web
+              EOF
+
+            - !Join ["", ["bucket=", "Fn::ImportValue": !Sub "${InfraStackName}-ConfigBucketName"]]
+            - |
+
+              # Copy SaltStack configuration files from bucket
+              aws s3 cp s3://$bucket/keys/master_minion.pub /etc/salt/pki/minion/master.pub
+              aws s3 cp s3://$bucket/keys/minion2.pem /etc/salt/pki/minion/minion.pem
+              aws s3 cp s3://$bucket/keys/minion2.pub /etc/salt/pki/minion/minion.pub
+
+              systemctl restart salt-minion
+      IamInstanceProfile: !Ref SaltConfigInstanceProfile
+
+  # AWS::EC2::SecurityGroup's
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+  SaltMasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows minions to talk to saltmaster
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 4505
+        ToPort: 4506
+        SourceSecurityGroupId: !GetAtt ["MinionSecurityGroup", "GroupId"]
+  MinionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable access to Salt Master
+  MinionSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt ["MinionSecurityGroup", "GroupId"]
+      IpProtocol: tcp
+      FromPort: 4505
+      ToPort: 4506
+      SourceSecurityGroupId: !GetAtt ["SaltMasterSecurityGroup", "GroupId"]
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Exposes port 80
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows access to database server from web
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 5432
+        ToPort: 5432
+        SourceSecurityGroupId: !GetAtt ["WebSecurityGroup", "GroupId"]
+
+  # AWS::Route53::RecordSet's
+  SaltMasterRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue: !Sub "${InfraStackName}-InternalZoneId"
+      Name: saltmaster.example.internal
+      Type: A
+      TTL: 900
+      ResourceRecords:
+      - !GetAtt SaltMaster.PrivateIp
+  DatabaseRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue: !Sub "${InfraStackName}-InternalZoneId"
+      Name: database.example.internal
+      Type: A
+      TTL: 900
+      ResourceRecords:
+      - !GetAtt Database.PrivateIp
+  WebRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue: !Sub "${InfraStackName}-InternalZoneId"
+      Name: web.example.internal
+      Type: A
+      TTL: 900
+      ResourceRecords:
+      - !GetAtt Web.PrivateIp
+
+Outputs:
+  SaltMasterIpAddress:
+    Description: The Salt Master server's ip address
+    Value: !GetAtt SaltMaster.PublicIp
+  WebIpAddress:
+    Description: The Web server's ip address
+    Value: !GetAtt Web.PublicIp
